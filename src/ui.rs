@@ -794,6 +794,8 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
                 _ => Color::White,
             };
             Line::from(vec![
+                Span::styled(e.timestamp.clone(), Style::default().fg(Color::DarkGray)),
+                Span::raw(" "),
                 Span::styled(tag.to_string(), Style::default().fg(tag_color)),
                 Span::raw(" "),
                 Span::styled(format!("{} ", e.id), Style::default().fg(Color::DarkGray)),

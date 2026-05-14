@@ -43,6 +43,7 @@ pub struct LogEntry {
     pub id: TunnelId,
     pub level: LogLevel,
     pub line: String,
+    pub timestamp: String,
 }
 
 impl Manager {
@@ -148,10 +149,12 @@ impl Manager {
         if self.logs.len() >= LOG_CAP {
             self.logs.pop_front();
         }
+        let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
         self.logs.push_back(LogEntry {
             id: id.clone(),
             level,
             line,
+            timestamp,
         });
     }
 
