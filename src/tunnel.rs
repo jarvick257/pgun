@@ -167,6 +167,8 @@ fn spawn_ssh(alias: &str, local: u16, remote: u16) -> Result<Child> {
         .args([
             "-N",
             "-o",
+            "BatchMode=yes",
+            "-o",
             "ExitOnForwardFailure=yes",
             "-o",
             "ServerAliveInterval=30",
