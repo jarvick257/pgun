@@ -1,5 +1,5 @@
 use crate::config::{self, Config, Host, Service};
-use crate::manager::{ConnState, HostAggState, Manager};
+use crate::manager::{ConnState, HostAggState, LogLevel, Manager};
 use crate::tunnel::{TunnelEvent, TunnelId, make_id};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -783,10 +783,23 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .rev()
         .take(area.height.saturating_sub(2) as usize)
-        .map(|e| Line::from(vec![
-            Span::styled(format!("[{}] ", e.id), Style::default().fg(Color::DarkGray)),
-            Span::raw(e.line.clone()),
-        ]))
+        .map(|e| {
+            let (tag, tag_color) = match e.level {
+                LogLevel::Info => ("INFO", Color::Green),
+                LogLevel::Warn => ("WARN", Color::Yellow),
+                LogLevel::Error => ("ERR ", Color::Red),
+            };
+            let line_color = match e.level {
+                LogLevel::Error => Color::Red,
+                _ => Color::White,
+            };
+            Line::from(vec![
+                Span::styled(tag.to_string(), Style::default().fg(tag_color)),
+                Span::raw(" "),
+                Span::styled(format!("{} ", e.id), Style::default().fg(Color::DarkGray)),
+                Span::styled(e.line.clone(), Style::default().fg(line_color)),
+            ])
+        })
         .collect();
     let p = Paragraph::new(lines.into_iter().rev().collect::<Vec<_>>())
         .block(Block::default().borders(Borders::ALL).title("logs (L to hide)"))

@@ -31,9 +31,17 @@ pub struct Manager {
     pub logs: VecDeque<LogEntry>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
 #[derive(Debug, Clone)]
 pub struct LogEntry {
     pub id: TunnelId,
+    pub level: LogLevel,
     pub line: String,
 }
 
@@ -109,32 +117,40 @@ impl Manager {
     pub fn apply_event(&mut self, ev: TunnelEvent) {
         match ev {
             TunnelEvent::Connecting { id } => {
+                self.push_log(&id, LogLevel::Info, "connecting…".into());
                 self.states.insert(id, ConnState::Connecting);
             }
             TunnelEvent::Connected { id, local_port } => {
+                self.push_log(
+                    &id,
+                    LogLevel::Info,
+                    format!("connected → 127.0.0.1:{local_port}"),
+                );
                 self.states.insert(id, ConnState::Connected { local_port });
             }
             TunnelEvent::Failed { id, reason } => {
-                self.push_log(&id, format!("failed: {reason}"));
+                self.push_log(&id, LogLevel::Error, format!("failed: {reason}"));
                 self.handles.remove(&id);
                 self.states.insert(id, ConnState::Failed { reason });
             }
             TunnelEvent::Disconnected { id } => {
+                self.push_log(&id, LogLevel::Info, "disconnected".into());
                 self.handles.remove(&id);
                 self.states.insert(id, ConnState::Disconnected);
             }
             TunnelEvent::Log { id, line } => {
-                self.push_log(&id, line);
+                self.push_log(&id, LogLevel::Warn, line);
             }
         }
     }
 
-    fn push_log(&mut self, id: &TunnelId, line: String) {
+    fn push_log(&mut self, id: &TunnelId, level: LogLevel, line: String) {
         if self.logs.len() >= LOG_CAP {
             self.logs.pop_front();
         }
         self.logs.push_back(LogEntry {
             id: id.clone(),
+            level,
             line,
         });
     }
