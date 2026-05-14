@@ -1,6 +1,6 @@
 use crate::config::{self, Config, Host, Service};
-use crate::manager::{ConnState, HostAggState, Manager, local_port_of};
-use crate::tunnel::make_id;
+use crate::manager::{ConnState, HostAggState, Manager};
+use crate::tunnel::{TunnelEvent, TunnelId, make_id};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
@@ -28,6 +28,7 @@ pub struct App {
     pub show_help: bool,
     pub status: Option<String>,
     pub should_quit: bool,
+    pub pending_opens: HashSet<TunnelId>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +106,7 @@ impl App {
             show_help: false,
             status: None,
             should_quit: false,
+            pending_opens: HashSet::new(),
         }
     }
 
@@ -481,17 +483,60 @@ impl App {
         };
         let id = make_id(&host_name, &svc_name);
         let state = self.mgr.state_of(&id);
-        if let Some(port) = local_port_of(&state) {
-            let url = svc.url(port);
-            if let Err(e) = open::that_detached(&url) {
-                self.status = Some(format!("open failed: {e}"));
-            } else {
-                self.status = Some(format!("opening {url}"));
+        match state {
+            ConnState::Connected { local_port } => {
+                let url = svc.url(local_port);
+                if let Err(e) = open::that_detached(&url) {
+                    self.status = Some(format!("open failed: {e}"));
+                } else {
+                    self.status = Some(format!("opening {url}"));
+                }
             }
-        } else {
-            self.mgr.connect(&host_name, &ssh, &svc);
-            self.status = Some(format!("connecting {host_name}/{svc_name} — press o again when ●"));
+            ConnState::Disconnecting => {
+                self.status = Some("disconnecting — wait".into());
+            }
+            ConnState::Connecting => {
+                self.pending_opens.insert(id);
+                self.status = Some(format!("waiting for {host_name}/{svc_name}…"));
+            }
+            ConnState::Disconnected | ConnState::Failed { .. } => {
+                self.pending_opens.insert(id);
+                self.mgr.connect(&host_name, &ssh, &svc);
+                self.status = Some(format!("connecting {host_name}/{svc_name} — will open when ready"));
+            }
         }
+    }
+
+    fn handle_tunnel_event(&mut self, ev: TunnelEvent) {
+        match &ev {
+            TunnelEvent::Connected { id, local_port } => {
+                if self.pending_opens.remove(id) {
+                    if let Some(url) = self.url_for_id(id, *local_port) {
+                        match open::that_detached(&url) {
+                            Ok(()) => self.status = Some(format!("opening {url}")),
+                            Err(e) => self.status = Some(format!("open failed: {e}")),
+                        }
+                    }
+                }
+            }
+            TunnelEvent::Failed { id, reason } => {
+                if self.pending_opens.remove(id) {
+                    self.status = Some(format!("{id} failed: {reason}"));
+                }
+            }
+            TunnelEvent::Disconnected { id } => {
+                self.pending_opens.remove(id);
+            }
+            _ => {}
+        }
+        self.mgr.apply_event(ev);
+    }
+
+    fn url_for_id(&self, id: &TunnelId, local_port: u16) -> Option<String> {
+        let (host, svc_name) = id.split_once('/')?;
+        let svc = self.cfg.hosts.iter().find(|h| h.name == host)?
+            .services.iter().find(|s| s.name == svc_name)?;
+        Some(svc.url(local_port))
     }
 
     fn reload(&mut self) {
@@ -531,9 +576,12 @@ pub async fn run<B: Backend>(term: &mut Terminal<B>, app: &mut App) -> Result<()
                 }
             }
             Some(ev) = app.mgr.events_rx.recv() => {
-                app.mgr.apply_event(ev);
-                while let Ok(ev) = app.mgr.events_rx.try_recv() {
-                    app.mgr.apply_event(ev);
+                app.handle_tunnel_event(ev);
+                loop {
+                    match app.mgr.events_rx.try_recv() {
+                        Ok(ev) => app.handle_tunnel_event(ev),
+                        Err(_) => break,
+                    }
                 }
             }
         }

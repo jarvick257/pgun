@@ -192,10 +192,3 @@ pub enum HostAggState {
     Failed,
 }
 
-pub fn local_port_of(state: &ConnState) -> Option<u16> {
-    match state {
-        ConnState::Connected { local_port } => Some(*local_port),
-        _ => None,
-    }
-}
-
