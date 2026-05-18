@@ -1,16 +1,16 @@
 use crate::config::{self, Config, Host, Service};
 use crate::manager::{ConnState, HostAggState, LogLevel, Manager};
-use crate::tunnel::{TunnelEvent, TunnelId, make_id};
+use crate::tunnel::{make_id, TunnelEvent, TunnelId};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 use ratatui::{
-    Frame, Terminal,
     backend::Backend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    Frame, Terminal,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -29,6 +29,7 @@ pub struct App {
     pub status: Option<String>,
     pub should_quit: bool,
     pub pending_opens: HashSet<TunnelId>,
+    pub pending_g: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +40,10 @@ pub struct Selection {
 
 impl Selection {
     fn empty() -> Self {
-        Self { host: None, svc: None }
+        Self {
+            host: None,
+            svc: None,
+        }
     }
 }
 
@@ -84,15 +88,26 @@ pub enum ConfirmAction {
 
 #[derive(Debug, Clone)]
 enum Row {
-    Host { name: String, ssh: String, svc_count: usize, expanded: bool },
-    Service { host: String, svc_name: String },
+    Host {
+        name: String,
+        ssh: String,
+        svc_count: usize,
+        expanded: bool,
+    },
+    Service {
+        host: String,
+        svc_name: String,
+    },
 }
 
 impl App {
     pub fn new(cfg: Config, cfg_path: PathBuf) -> Self {
         let expanded: HashSet<String> = cfg.hosts.iter().map(|h| h.name.clone()).collect();
         let selection = match cfg.hosts.first() {
-            Some(h) => Selection { host: Some(h.name.clone()), svc: None },
+            Some(h) => Selection {
+                host: Some(h.name.clone()),
+                svc: None,
+            },
             None => Selection::empty(),
         };
         Self {
@@ -107,6 +122,7 @@ impl App {
             status: None,
             should_quit: false,
             pending_opens: HashSet::new(),
+            pending_g: false,
         }
     }
 
@@ -175,6 +191,22 @@ impl App {
         self.select_index(&rows, new);
     }
 
+    fn select_first(&mut self) {
+        let rows = self.flat_rows();
+        if rows.is_empty() {
+            return;
+        }
+        self.select_index(&rows, 0);
+    }
+
+    fn select_last(&mut self) {
+        let rows = self.flat_rows();
+        if rows.is_empty() {
+            return;
+        }
+        self.select_index(&rows, rows.len() - 1);
+    }
+
     fn save_config(&mut self) {
         if let Err(e) = config::save(&self.cfg_path, &self.cfg) {
             self.status = Some(format!("save failed: {e}"));
@@ -185,8 +217,16 @@ impl App {
         self.modal = Modal::Form(FormModal {
             title: "Add host".into(),
             fields: vec![
-                Field { label: "name".into(), value: String::new(), placeholder: "vps".into() },
-                Field { label: "ssh".into(), value: String::new(), placeholder: "ssh-config alias".into() },
+                Field {
+                    label: "name".into(),
+                    value: String::new(),
+                    placeholder: "vps".into(),
+                },
+                Field {
+                    label: "ssh".into(),
+                    value: String::new(),
+                    placeholder: "ssh-config alias".into(),
+                },
             ],
             focus: 0,
             action: FormAction::AddHost,
@@ -204,11 +244,31 @@ impl App {
         self.modal = Modal::Form(FormModal {
             title: format!("Add service to {host}"),
             fields: vec![
-                Field { label: "name".into(), value: String::new(), placeholder: "matrix admin".into() },
-                Field { label: "port".into(), value: String::new(), placeholder: "8126".into() },
-                Field { label: "scheme".into(), value: "http".into(), placeholder: "http".into() },
-                Field { label: "path".into(), value: "/".into(), placeholder: "/".into() },
-                Field { label: "local_port".into(), value: String::new(), placeholder: "auto".into() },
+                Field {
+                    label: "name".into(),
+                    value: String::new(),
+                    placeholder: "matrix admin".into(),
+                },
+                Field {
+                    label: "port".into(),
+                    value: String::new(),
+                    placeholder: "8126".into(),
+                },
+                Field {
+                    label: "scheme".into(),
+                    value: "http".into(),
+                    placeholder: "http".into(),
+                },
+                Field {
+                    label: "path".into(),
+                    value: "/".into(),
+                    placeholder: "/".into(),
+                },
+                Field {
+                    label: "local_port".into(),
+                    value: String::new(),
+                    placeholder: "auto".into(),
+                },
             ],
             focus: 0,
             action: FormAction::AddService { host },
@@ -234,14 +294,37 @@ impl App {
             self.modal = Modal::Form(FormModal {
                 title: format!("Edit {host_name}/{svc_name}"),
                 fields: vec![
-                    Field { label: "name".into(), value: svc.name.clone(), placeholder: String::new() },
-                    Field { label: "port".into(), value: svc.port.to_string(), placeholder: String::new() },
-                    Field { label: "scheme".into(), value: svc.scheme.clone(), placeholder: String::new() },
-                    Field { label: "path".into(), value: svc.path.clone(), placeholder: String::new() },
-                    Field { label: "local_port".into(), value: svc.local_port.map(|p| p.to_string()).unwrap_or_default(), placeholder: "auto".into() },
+                    Field {
+                        label: "name".into(),
+                        value: svc.name.clone(),
+                        placeholder: String::new(),
+                    },
+                    Field {
+                        label: "port".into(),
+                        value: svc.port.to_string(),
+                        placeholder: String::new(),
+                    },
+                    Field {
+                        label: "scheme".into(),
+                        value: svc.scheme.clone(),
+                        placeholder: String::new(),
+                    },
+                    Field {
+                        label: "path".into(),
+                        value: svc.path.clone(),
+                        placeholder: String::new(),
+                    },
+                    Field {
+                        label: "local_port".into(),
+                        value: svc.local_port.map(|p| p.to_string()).unwrap_or_default(),
+                        placeholder: "auto".into(),
+                    },
                 ],
                 focus: 0,
-                action: FormAction::EditService { host: host_name, original_svc: svc_name },
+                action: FormAction::EditService {
+                    host: host_name,
+                    original_svc: svc_name,
+                },
             });
         } else if let Some(host_name) = self.selection.host.clone() {
             let host = match self.cfg.hosts.iter().find(|h| h.name == host_name) {
@@ -251,11 +334,21 @@ impl App {
             self.modal = Modal::Form(FormModal {
                 title: format!("Edit host {host_name}"),
                 fields: vec![
-                    Field { label: "name".into(), value: host.name.clone(), placeholder: String::new() },
-                    Field { label: "ssh".into(), value: host.ssh.clone(), placeholder: String::new() },
+                    Field {
+                        label: "name".into(),
+                        value: host.name.clone(),
+                        placeholder: String::new(),
+                    },
+                    Field {
+                        label: "ssh".into(),
+                        value: host.ssh.clone(),
+                        placeholder: String::new(),
+                    },
                 ],
                 focus: 0,
-                action: FormAction::EditHost { original: host_name },
+                action: FormAction::EditHost {
+                    original: host_name,
+                },
             });
         }
     }
@@ -271,7 +364,13 @@ impl App {
                 action: ConfirmAction::DeleteService { host, svc },
             });
         } else if let Some(host) = self.selection.host.clone() {
-            let count = self.cfg.hosts.iter().find(|h| h.name == host).map(|h| h.services.len()).unwrap_or(0);
+            let count = self
+                .cfg
+                .hosts
+                .iter()
+                .find(|h| h.name == host)
+                .map(|h| h.services.len())
+                .unwrap_or(0);
             self.modal = Modal::Confirm(ConfirmModal {
                 message: format!("Delete host '{host}' and {count} service(s)? (y/n)"),
                 action: ConfirmAction::DeleteHost(host),
@@ -285,7 +384,11 @@ impl App {
             _ => return,
         };
         let action = form.action.clone();
-        let values: Vec<String> = form.fields.iter().map(|f| f.value.trim().to_string()).collect();
+        let values: Vec<String> = form
+            .fields
+            .iter()
+            .map(|f| f.value.trim().to_string())
+            .collect();
 
         let result: Result<(), String> = (|| {
             match action {
@@ -304,7 +407,10 @@ impl App {
                         ssh,
                         services: vec![],
                     });
-                    self.selection = Selection { host: Some(name), svc: None };
+                    self.selection = Selection {
+                        host: Some(name),
+                        svc: None,
+                    };
                 }
                 FormAction::EditHost { original } => {
                     let new_name = values[0].clone();
@@ -315,7 +421,11 @@ impl App {
                     if new_name != original && self.cfg.hosts.iter().any(|h| h.name == new_name) {
                         return Err(format!("host '{new_name}' already exists"));
                     }
-                    let host = self.cfg.hosts.iter_mut().find(|h| h.name == original)
+                    let host = self
+                        .cfg
+                        .hosts
+                        .iter_mut()
+                        .find(|h| h.name == original)
                         .ok_or_else(|| "host vanished".to_string())?;
                     if new_name != original {
                         self.expanded.remove(&original);
@@ -323,60 +433,111 @@ impl App {
                     }
                     host.name = new_name.clone();
                     host.ssh = new_ssh;
-                    self.selection = Selection { host: Some(new_name), svc: None };
+                    self.selection = Selection {
+                        host: Some(new_name),
+                        svc: None,
+                    };
                 }
                 FormAction::AddService { host } => {
                     let name = values[0].clone();
                     let port_s = values[1].clone();
-                    let scheme = if values[2].is_empty() { "http".into() } else { values[2].clone() };
-                    let path = if values[3].is_empty() { "/".into() } else { values[3].clone() };
+                    let scheme = if values[2].is_empty() {
+                        "http".into()
+                    } else {
+                        values[2].clone()
+                    };
+                    let path = if values[3].is_empty() {
+                        "/".into()
+                    } else {
+                        values[3].clone()
+                    };
                     let local_port = if values[4].is_empty() {
                         None
                     } else {
-                        let p: u16 = values[4].parse().map_err(|_| "local_port must be 1..=65535".to_string())?;
-                        if p == 0 { return Err("local_port must be > 0".into()); }
+                        let p: u16 = values[4]
+                            .parse()
+                            .map_err(|_| "local_port must be 1..=65535".to_string())?;
+                        if p == 0 {
+                            return Err("local_port must be > 0".into());
+                        }
                         Some(p)
                     };
                     if name.is_empty() {
                         return Err("name required".into());
                     }
-                    let port: u16 = port_s.parse().map_err(|_| "port must be 1..=65535".to_string())?;
+                    let port: u16 = port_s
+                        .parse()
+                        .map_err(|_| "port must be 1..=65535".to_string())?;
                     if port == 0 {
                         return Err("port must be > 0".into());
                     }
-                    let h = self.cfg.hosts.iter_mut().find(|h| h.name == host)
+                    let h = self
+                        .cfg
+                        .hosts
+                        .iter_mut()
+                        .find(|h| h.name == host)
                         .ok_or_else(|| "host vanished".to_string())?;
                     if h.services.iter().any(|s| s.name == name) {
                         return Err(format!("service '{name}' already exists in {host}"));
                     }
-                    h.services.push(Service { name: name.clone(), port, scheme, path, local_port });
-                    self.selection = Selection { host: Some(host), svc: Some(name) };
+                    h.services.push(Service {
+                        name: name.clone(),
+                        port,
+                        scheme,
+                        path,
+                        local_port,
+                    });
+                    self.selection = Selection {
+                        host: Some(host),
+                        svc: Some(name),
+                    };
                 }
                 FormAction::EditService { host, original_svc } => {
                     let new_name = values[0].clone();
                     let port_s = values[1].clone();
-                    let scheme = if values[2].is_empty() { "http".into() } else { values[2].clone() };
-                    let path = if values[3].is_empty() { "/".into() } else { values[3].clone() };
+                    let scheme = if values[2].is_empty() {
+                        "http".into()
+                    } else {
+                        values[2].clone()
+                    };
+                    let path = if values[3].is_empty() {
+                        "/".into()
+                    } else {
+                        values[3].clone()
+                    };
                     let local_port = if values[4].is_empty() {
                         None
                     } else {
-                        let p: u16 = values[4].parse().map_err(|_| "local_port must be 1..=65535".to_string())?;
-                        if p == 0 { return Err("local_port must be > 0".into()); }
+                        let p: u16 = values[4]
+                            .parse()
+                            .map_err(|_| "local_port must be 1..=65535".to_string())?;
+                        if p == 0 {
+                            return Err("local_port must be > 0".into());
+                        }
                         Some(p)
                     };
                     if new_name.is_empty() {
                         return Err("name required".into());
                     }
-                    let port: u16 = port_s.parse().map_err(|_| "port must be 1..=65535".to_string())?;
+                    let port: u16 = port_s
+                        .parse()
+                        .map_err(|_| "port must be 1..=65535".to_string())?;
                     if port == 0 {
                         return Err("port must be > 0".into());
                     }
-                    let h = self.cfg.hosts.iter_mut().find(|h| h.name == host)
+                    let h = self
+                        .cfg
+                        .hosts
+                        .iter_mut()
+                        .find(|h| h.name == host)
                         .ok_or_else(|| "host vanished".to_string())?;
                     if new_name != original_svc && h.services.iter().any(|s| s.name == new_name) {
                         return Err(format!("service '{new_name}' already exists in {host}"));
                     }
-                    let svc = h.services.iter_mut().find(|s| s.name == original_svc)
+                    let svc = h
+                        .services
+                        .iter_mut()
+                        .find(|s| s.name == original_svc)
                         .ok_or_else(|| "service vanished".to_string())?;
                     let was_connected = matches!(
                         self.mgr.state_of(&make_id(&host, &original_svc)),
@@ -390,7 +551,10 @@ impl App {
                     if was_connected {
                         self.mgr.disconnect(&host, &original_svc);
                     }
-                    self.selection = Selection { host: Some(host), svc: Some(new_name) };
+                    self.selection = Selection {
+                        host: Some(host),
+                        svc: Some(new_name),
+                    };
                 }
             }
             Ok(())
@@ -421,17 +585,25 @@ impl App {
                 }
                 self.cfg.hosts.retain(|h| h.name != name);
                 self.expanded.remove(&name);
-                self.selection = self.cfg.hosts.first().map(|h| Selection {
-                    host: Some(h.name.clone()),
-                    svc: None,
-                }).unwrap_or_else(Selection::empty);
+                self.selection = self
+                    .cfg
+                    .hosts
+                    .first()
+                    .map(|h| Selection {
+                        host: Some(h.name.clone()),
+                        svc: None,
+                    })
+                    .unwrap_or_else(Selection::empty);
             }
             ConfirmAction::DeleteService { host, svc } => {
                 self.mgr.disconnect(&host, &svc);
                 if let Some(h) = self.cfg.hosts.iter_mut().find(|h| h.name == host) {
                     h.services.retain(|s| s.name != svc);
                 }
-                self.selection = Selection { host: Some(host), svc: None };
+                self.selection = Selection {
+                    host: Some(host),
+                    svc: None,
+                };
             }
         }
         self.modal = Modal::None;
@@ -449,8 +621,12 @@ impl App {
                 .hosts
                 .iter()
                 .find(|h| h.name == host_name)
-                .and_then(|h| h.services.iter().find(|s| s.name == svc_name).map(|s| (h.ssh.clone(), s.clone())))
-            {
+                .and_then(|h| {
+                    h.services
+                        .iter()
+                        .find(|s| s.name == svc_name)
+                        .map(|s| (h.ssh.clone(), s.clone()))
+                }) {
                 Some(x) => x,
                 None => return,
             };
@@ -493,8 +669,12 @@ impl App {
             .hosts
             .iter()
             .find(|h| h.name == host_name)
-            .and_then(|h| h.services.iter().find(|s| s.name == svc_name).map(|s| (h.ssh.clone(), s.clone())))
-        {
+            .and_then(|h| {
+                h.services
+                    .iter()
+                    .find(|s| s.name == svc_name)
+                    .map(|s| (h.ssh.clone(), s.clone()))
+            }) {
             Some(x) => x,
             None => return,
         };
@@ -519,7 +699,9 @@ impl App {
             ConnState::Disconnected | ConnState::Failed { .. } => {
                 self.pending_opens.insert(id);
                 self.mgr.connect(&host_name, &ssh, &svc);
-                self.status = Some(format!("connecting {host_name}/{svc_name} — will open when ready"));
+                self.status = Some(format!(
+                    "connecting {host_name}/{svc_name} — will open when ready"
+                ));
             }
         }
     }
@@ -551,8 +733,14 @@ impl App {
 
     fn url_for_id(&self, id: &TunnelId, local_port: u16) -> Option<String> {
         let (host, svc_name) = id.split_once('/')?;
-        let svc = self.cfg.hosts.iter().find(|h| h.name == host)?
-            .services.iter().find(|s| s.name == svc_name)?;
+        let svc = self
+            .cfg
+            .hosts
+            .iter()
+            .find(|h| h.name == host)?
+            .services
+            .iter()
+            .find(|s| s.name == svc_name)?;
         Some(svc.url(local_port))
     }
 
@@ -649,7 +837,17 @@ fn handle_key(app: &mut App, k: KeyEvent) {
 }
 
 fn handle_tree_key(app: &mut App, k: KeyEvent) {
+    let was_pending_g = app.pending_g;
+    app.pending_g = false;
     match k.code {
+        KeyCode::Char('g') => {
+            if was_pending_g {
+                app.select_first();
+            } else {
+                app.pending_g = true;
+            }
+        }
+        KeyCode::Char('G') => app.select_last(),
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.show_help = true,
         KeyCode::Char('L') => app.show_logs = !app.show_logs,
@@ -694,7 +892,11 @@ fn draw(f: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(main_h),
-            if app.show_logs { Constraint::Min(5) } else { Constraint::Length(0) },
+            if app.show_logs {
+                Constraint::Min(5)
+            } else {
+                Constraint::Length(0)
+            },
             Constraint::Length(1),
         ])
         .split(size);
@@ -724,19 +926,25 @@ fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, r)| render_row(app, r, Some(i) == selected_idx))
         .collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("tunnels"));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("tunnels"));
     f.render_widget(list, area);
 }
 
 fn render_row<'a>(app: &App, row: &Row, selected: bool) -> ListItem<'a> {
     let base = if selected {
-        Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        Style::default()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
     match row {
-        Row::Host { name, ssh, svc_count, expanded } => {
+        Row::Host {
+            name,
+            ssh,
+            svc_count,
+            expanded,
+        } => {
             let host = app.cfg.hosts.iter().find(|h| &h.name == name);
             let agg = match host {
                 Some(h) => app.mgr.host_aggregate(name, &h.services),
@@ -749,7 +957,10 @@ fn render_row<'a>(app: &App, row: &Row, selected: bool) -> ListItem<'a> {
                 Span::styled(icon.to_string(), Style::default().fg(color)),
                 Span::raw(format!("  {name}  ")),
                 Span::styled(format!("[{ssh}]"), Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("  ({svc_count})"), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("  ({svc_count})"),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]))
             .style(base)
         }
@@ -757,7 +968,11 @@ fn render_row<'a>(app: &App, row: &Row, selected: bool) -> ListItem<'a> {
             let id = make_id(host, svc_name);
             let state = app.mgr.state_of(&id);
             let (icon, color, extra) = service_icon(&state);
-            let svc = app.cfg.hosts.iter().find(|h| &h.name == host)
+            let svc = app
+                .cfg
+                .hosts
+                .iter()
+                .find(|h| &h.name == host)
                 .and_then(|h| h.services.iter().find(|s| &s.name == svc_name));
             let port_info = svc.map(|s| format!(" :{}", s.port)).unwrap_or_default();
             ListItem::new(Line::from(vec![
@@ -787,7 +1002,9 @@ fn service_icon(state: &ConnState) -> (char, Color, String) {
     match state {
         ConnState::Disconnected => ('○', Color::Gray, String::new()),
         ConnState::Connecting => ('◌', Color::Cyan, " connecting…".into()),
-        ConnState::Connected { local_port } => ('●', Color::Green, format!(" → 127.0.0.1:{local_port}")),
+        ConnState::Connected { local_port } => {
+            ('●', Color::Green, format!(" → 127.0.0.1:{local_port}"))
+        }
         ConnState::Disconnecting => ('◌', Color::Cyan, " disconnecting…".into()),
         ConnState::Failed { reason } => ('✗', Color::Red, format!(" {reason}")),
     }
@@ -821,7 +1038,11 @@ fn draw_logs(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let p = Paragraph::new(lines.into_iter().rev().collect::<Vec<_>>())
-        .block(Block::default().borders(Borders::ALL).title("logs (L to hide)"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("logs (L to hide)"),
+        )
         .wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
@@ -841,7 +1062,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let x = area.x + area.width.saturating_sub(w) / 2;
     let y = area.y + area.height.saturating_sub(h) / 2;
-    Rect { x, y, width: w.min(area.width), height: h.min(area.height) }
+    Rect {
+        x,
+        y,
+        width: w.min(area.width),
+        height: h.min(area.height),
+    }
 }
 
 fn draw_form(f: &mut Frame, form: &FormModal, area: Rect) {
@@ -853,15 +1079,23 @@ fn draw_form(f: &mut Frame, form: &FormModal, area: Rect) {
     for (i, field) in form.fields.iter().enumerate() {
         let focused = i == form.focus;
         let label_style = if focused {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
         lines.push(Line::from(Span::styled(field.label.clone(), label_style)));
         let value_display = if field.value.is_empty() && !focused {
-            Span::styled(field.placeholder.clone(), Style::default().fg(Color::DarkGray))
+            Span::styled(
+                field.placeholder.clone(),
+                Style::default().fg(Color::DarkGray),
+            )
         } else if focused {
-            Span::styled(format!("{}_", field.value), Style::default().fg(Color::White).bg(Color::DarkGray))
+            Span::styled(
+                format!("{}_", field.value),
+                Style::default().fg(Color::White).bg(Color::DarkGray),
+            )
         } else {
             Span::raw(field.value.clone())
         };
@@ -872,7 +1106,9 @@ fn draw_form(f: &mut Frame, form: &FormModal, area: Rect) {
         "Tab/↑↓ field  Enter submit  Esc cancel",
         Style::default().fg(Color::DarkGray),
     )));
-    let block = Block::default().borders(Borders::ALL).title(form.title.clone());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(form.title.clone());
     let p = Paragraph::new(lines).block(block);
     f.render_widget(p, r);
 }
@@ -892,9 +1128,15 @@ fn draw_error(f: &mut Frame, msg: &str, area: Rect) {
     let r = centered(area, w, 6);
     f.render_widget(Clear, r);
     let p = Paragraph::new(vec![
-        Line::from(Span::styled(msg.to_string(), Style::default().fg(Color::Red))),
+        Line::from(Span::styled(
+            msg.to_string(),
+            Style::default().fg(Color::Red),
+        )),
         Line::from(""),
-        Line::from(Span::styled("press any key", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            "press any key",
+            Style::default().fg(Color::DarkGray),
+        )),
     ])
     .block(Block::default().borders(Borders::ALL).title("error"))
     .wrap(Wrap { trim: false });
@@ -908,6 +1150,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from("Movement"),
         Line::from("  j/k or ↓/↑    move selection"),
+        Line::from("  gg / G        jump to first / last"),
         Line::from("  h/l or ←/→    collapse/expand host"),
         Line::from(""),
         Line::from("Tunnels"),
