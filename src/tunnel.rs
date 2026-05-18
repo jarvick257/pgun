@@ -57,11 +57,12 @@ pub fn spawn_tunnel(
     id: TunnelId,
     ssh_alias: String,
     remote_port: u16,
+    local_port: Option<u16>,
     events: mpsc::UnboundedSender<TunnelEvent>,
 ) -> TunnelHandle {
     let (cancel_tx, cancel_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
-        run_tunnel(id, ssh_alias, remote_port, events, cancel_rx).await;
+        run_tunnel(id, ssh_alias, remote_port, local_port, events, cancel_rx).await;
     });
     TunnelHandle {
         cancel: Some(cancel_tx),
@@ -73,20 +74,24 @@ async fn run_tunnel(
     id: TunnelId,
     ssh_alias: String,
     remote_port: u16,
+    local_port: Option<u16>,
     events: mpsc::UnboundedSender<TunnelEvent>,
     mut cancel: oneshot::Receiver<()>,
 ) {
     let _ = events.send(TunnelEvent::Connecting { id: id.clone() });
 
-    let local_port = match pick_local_port() {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = events.send(TunnelEvent::Failed {
-                id,
-                reason: format!("port alloc: {e}"),
-            });
-            return;
-        }
+    let local_port = match local_port {
+        Some(p) => p,
+        None => match pick_local_port() {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = events.send(TunnelEvent::Failed {
+                    id,
+                    reason: format!("port alloc: {e}"),
+                });
+                return;
+            }
+        },
     };
 
     let mut child = match spawn_ssh(&ssh_alias, local_port, remote_port) {

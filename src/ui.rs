@@ -208,6 +208,7 @@ impl App {
                 Field { label: "port".into(), value: String::new(), placeholder: "8126".into() },
                 Field { label: "scheme".into(), value: "http".into(), placeholder: "http".into() },
                 Field { label: "path".into(), value: "/".into(), placeholder: "/".into() },
+                Field { label: "local_port".into(), value: String::new(), placeholder: "auto".into() },
             ],
             focus: 0,
             action: FormAction::AddService { host },
@@ -237,6 +238,7 @@ impl App {
                     Field { label: "port".into(), value: svc.port.to_string(), placeholder: String::new() },
                     Field { label: "scheme".into(), value: svc.scheme.clone(), placeholder: String::new() },
                     Field { label: "path".into(), value: svc.path.clone(), placeholder: String::new() },
+                    Field { label: "local_port".into(), value: svc.local_port.map(|p| p.to_string()).unwrap_or_default(), placeholder: "auto".into() },
                 ],
                 focus: 0,
                 action: FormAction::EditService { host: host_name, original_svc: svc_name },
@@ -328,6 +330,13 @@ impl App {
                     let port_s = values[1].clone();
                     let scheme = if values[2].is_empty() { "http".into() } else { values[2].clone() };
                     let path = if values[3].is_empty() { "/".into() } else { values[3].clone() };
+                    let local_port = if values[4].is_empty() {
+                        None
+                    } else {
+                        let p: u16 = values[4].parse().map_err(|_| "local_port must be 1..=65535".to_string())?;
+                        if p == 0 { return Err("local_port must be > 0".into()); }
+                        Some(p)
+                    };
                     if name.is_empty() {
                         return Err("name required".into());
                     }
@@ -340,7 +349,7 @@ impl App {
                     if h.services.iter().any(|s| s.name == name) {
                         return Err(format!("service '{name}' already exists in {host}"));
                     }
-                    h.services.push(Service { name: name.clone(), port, scheme, path });
+                    h.services.push(Service { name: name.clone(), port, scheme, path, local_port });
                     self.selection = Selection { host: Some(host), svc: Some(name) };
                 }
                 FormAction::EditService { host, original_svc } => {
@@ -348,6 +357,13 @@ impl App {
                     let port_s = values[1].clone();
                     let scheme = if values[2].is_empty() { "http".into() } else { values[2].clone() };
                     let path = if values[3].is_empty() { "/".into() } else { values[3].clone() };
+                    let local_port = if values[4].is_empty() {
+                        None
+                    } else {
+                        let p: u16 = values[4].parse().map_err(|_| "local_port must be 1..=65535".to_string())?;
+                        if p == 0 { return Err("local_port must be > 0".into()); }
+                        Some(p)
+                    };
                     if new_name.is_empty() {
                         return Err("name required".into());
                     }
@@ -370,6 +386,7 @@ impl App {
                     svc.port = port;
                     svc.scheme = scheme;
                     svc.path = path;
+                    svc.local_port = local_port;
                     if was_connected {
                         self.mgr.disconnect(&host, &original_svc);
                     }

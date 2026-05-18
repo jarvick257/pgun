@@ -31,8 +31,9 @@ ssh  = "user@prod.example.com"
   [[hosts.services]]
   name   = "grafana"
   port   = 3000
-  scheme = "http"   # optional, default "http"
-  path   = "/"      # optional, default "/"
+  scheme     = "http"   # optional, default "http"
+  path       = "/"      # optional, default "/"
+  local_port = 3000     # optional, pin local port (default: ephemeral)
 
   [[hosts.services]]
   name = "postgres"

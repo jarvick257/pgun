@@ -73,6 +73,7 @@ impl Manager {
             id.clone(),
             ssh_alias.to_string(),
             svc.port,
+            svc.local_port,
             self.events_tx.clone(),
         );
         self.handles.insert(id, handle);
